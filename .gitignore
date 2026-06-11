@@ -37,4 +37,6 @@ lerna-debug.log*
 !.elasticbeanstalk/*.cfg.yml
 !.elasticbeanstalk/*.global.yml
 
+cdk.out/
 .env
+.npmignore
