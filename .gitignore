@@ -39,4 +39,4 @@ lerna-debug.log*
 
 cdk.out/
 .env
-.npmignore
+
