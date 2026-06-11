@@ -1,0 +1,5 @@
+src
+cdk.out
+*.ts
+.env
+node_modules
