@@ -19,6 +19,7 @@ export class CartServiceStack extends cdk.Stack {
         DB_NAME: process.env.DB_NAME || '',
         DB_USER: process.env.DB_USER || '',
         DB_PASSWORD: process.env.DB_PASSWORD || '',
+        PRODUCT_SERVICE_URL: process.env.PRODUCT_SERVICE_URL || '',
       },
     });
 

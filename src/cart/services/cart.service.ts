@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Cart } from '../models';
 import { PutCartPayload } from 'src/order/type';
 import { DatabaseService } from './database.service';
+import axios from 'axios';
 
 @Injectable()
 export class CartService {
@@ -22,7 +23,22 @@ export class CartService {
     );
     const row = result.rows[0];
     if (!row) return null;
-    return { ...row, items: row.items || [] };
+
+    const items = row.items || [];
+    const enrichedItems = await Promise.all(
+      items.map(async (item: any) => {
+        try {
+          const res = await axios.get(
+            `${process.env.PRODUCT_SERVICE_URL}/products/${item.product.id}`
+          );
+          return { ...item, product: res.data };
+        } catch {
+          return item;
+        }
+      })
+    );
+
+    return { ...row, items: enrichedItems };
   }
 
   async createByUserId(userId: string): Promise<Cart> {
