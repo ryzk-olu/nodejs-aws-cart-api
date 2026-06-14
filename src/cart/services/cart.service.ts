@@ -94,25 +94,21 @@ export class CartService {
     const client = await this.db.pool.connect();
     try {
       await client.query('BEGIN');
-
       const cartResult = await client.query(
         `SELECT id FROM carts WHERE user_id = $1 AND status = 'OPEN' LIMIT 1`,
         [userId]
       );
       const cartId = cartResult.rows[0]?.id;
       if (!cartId) throw new Error('Cart not found');
-
       await client.query(
         `INSERT INTO orders (user_id, cart_id, delivery, comments, status, total)
          VALUES ($1, $2, $3, $4, 'ORDERED', $5)`,
         [userId, cartId, JSON.stringify(delivery), comments || '', total]
       );
-
       await client.query(
         `UPDATE carts SET status = 'ORDERED', updated_at = CURRENT_DATE WHERE id = $1`,
         [cartId]
       );
-
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');
@@ -136,5 +132,43 @@ export class CartService {
       [name, email, password]
     );
     return result.rows[0];
+  }
+
+  async getOrdersByUserId(userId: string) {
+    const result = await this.db.query(
+      `SELECT o.*, json_agg(
+        json_build_object('productId', ci.product_id, 'count', ci.count)
+      ) FILTER (WHERE ci.cart_id IS NOT NULL) as items
+      FROM orders o
+      LEFT JOIN cart_items ci ON o.cart_id = ci.cart_id
+      WHERE o.user_id = $1
+      GROUP BY o.id`,
+      [userId]
+    );
+    return result.rows.map((row: any) => ({
+      id: row.id,
+      items: row.items || [],
+      address: row.delivery || {},
+      statusHistory: [
+        {
+          status: row.status,
+          timestamp: Date.now(),
+          comment: row.comments || '',
+        },
+      ],
+    }));
+  }
+
+  async updateOrderStatus(id: string, status: string) {
+    const result = await this.db.query(
+      `UPDATE orders SET status = $1 WHERE id = $2 RETURNING *`,
+      [status, id]
+    );
+    return result.rows[0];
+  }
+
+  async deleteOrder(id: string) {
+    await this.db.query(`DELETE FROM orders WHERE id = $1`, [id]);
+    return { deleted: true };
   }
 }
