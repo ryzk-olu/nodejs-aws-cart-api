@@ -1,0 +1,13 @@
+node_modules
+dist
+cdk.out
+*.md
+.git
+.gitignore
+.env
+test
+coverage
+*.spec.ts
+deploy
+deploy_package
+lambda-code.zip
