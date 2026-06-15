@@ -1,13 +1,29 @@
+# Dependencies
+# Will be reinstalled inside container
 node_modules
 dist
 cdk.out
+
+# Git files and dosc files
 *.md
 .git
 .gitignore
+
+# Env file
+# Security reasons
 .env
+
+# Testing files
+# We dont need to test this app inside container
 test
 coverage
 *.spec.ts
+
+# Deploy artifacts from CDK setup
+# We use eb
 deploy
 deploy_package
 lambda-code.zip
+
+# Build script for CDK
+build-deploy.sh
