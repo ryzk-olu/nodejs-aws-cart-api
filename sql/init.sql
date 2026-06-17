@@ -16,3 +16,14 @@ CREATE TABLE cart_items (
   count INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (cart_id, product_id)
 );
+
+CREATE TABLE orders (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL,
+  cart_id UUID REFERENCES carts(id),
+  payment JSON,
+  delivery JSON,
+  comments TEXT,
+  status TEXT NOT NULL DEFAULT 'OPEN',
+  total NUMERIC NOT NULL DEFAULT 0
+);
