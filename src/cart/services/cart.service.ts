@@ -1,62 +1,174 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { Cart, CartStatuses } from '../models';
+import { Cart } from '../models';
 import { PutCartPayload } from 'src/order/type';
+import { DatabaseService } from './database.service';
+import axios from 'axios';
 
 @Injectable()
 export class CartService {
-  private userCarts: Record<string, Cart> = {};
+  constructor(private db: DatabaseService) {}
 
-  findByUserId(userId: string): Cart {
-    return this.userCarts[userId];
+  async findByUserId(userId: string): Promise<Cart> {
+    const result = await this.db.query(
+      `SELECT c.*, json_agg(
+        json_build_object('product', json_build_object('id', ci.product_id), 'count', ci.count)
+      ) FILTER (WHERE ci.cart_id IS NOT NULL) as items
+      FROM carts c
+      LEFT JOIN cart_items ci ON c.id = ci.cart_id
+      WHERE c.user_id = $1 AND c.status = 'OPEN'
+      GROUP BY c.id
+      LIMIT 1`,
+      [userId]
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+
+    const items = row.items || [];
+    const enrichedItems = await Promise.all(
+      items.map(async (item: any) => {
+        try {
+          const res = await axios.get(
+            `${process.env.PRODUCT_SERVICE_URL}/products/${item.product.id}`
+          );
+          return { ...item, product: res.data };
+        } catch {
+          return item;
+        }
+      })
+    );
+
+    return { ...row, items: enrichedItems };
   }
 
-  createByUserId(user_id: string): Cart {
-    const timestamp = Date.now();
-
-    const userCart = {
-      id: randomUUID(),
-      user_id,
-      created_at: timestamp,
-      updated_at: timestamp,
-      status: CartStatuses.OPEN,
-      items: [],
-    };
-
-    this.userCarts[user_id] = userCart;
-
-    return userCart;
+  async createByUserId(userId: string): Promise<Cart> {
+    const result = await this.db.query(
+      `INSERT INTO carts (id, user_id, created_at, updated_at, status)
+       VALUES ($1, $2, CURRENT_DATE, CURRENT_DATE, 'OPEN')
+       RETURNING *`,
+      [randomUUID(), userId]
+    );
+    return { ...result.rows[0], items: [] };
   }
 
-  findOrCreateByUserId(userId: string): Cart {
-    const userCart = this.findByUserId(userId);
-
-    if (userCart) {
-      return userCart;
-    }
-
+  async findOrCreateByUserId(userId: string): Promise<Cart> {
+    const cart = await this.findByUserId(userId);
+    if (cart) return cart;
     return this.createByUserId(userId);
   }
 
-  updateByUserId(userId: string, payload: PutCartPayload): Cart {
-    const userCart = this.findOrCreateByUserId(userId);
-
-    const index = userCart.items.findIndex(
-      ({ product }) => product.id === payload.product.id,
+  async updateByUserId(userId: string, payload: PutCartPayload): Promise<Cart> {
+    const cart = await this.findOrCreateByUserId(userId);
+    const existing = await this.db.query(
+      `SELECT * FROM cart_items WHERE cart_id = $1 AND product_id = $2`,
+      [cart.id, payload.product.id]
     );
-
-    if (index === -1) {
-      userCart.items.push(payload);
+    if (existing.rows.length === 0) {
+      await this.db.query(
+        `INSERT INTO cart_items (cart_id, product_id, count) VALUES ($1, $2, $3)`,
+        [cart.id, payload.product.id, payload.count]
+      );
     } else if (payload.count === 0) {
-      userCart.items.splice(index, 1);
+      await this.db.query(
+        `DELETE FROM cart_items WHERE cart_id = $1 AND product_id = $2`,
+        [cart.id, payload.product.id]
+      );
     } else {
-      userCart.items[index] = payload;
+      await this.db.query(
+        `UPDATE cart_items SET count = $1 WHERE cart_id = $2 AND product_id = $3`,
+        [payload.count, cart.id, payload.product.id]
+      );
     }
-
-    return userCart;
+    return this.findByUserId(userId);
   }
 
-  removeByUserId(userId): void {
-    this.userCarts[userId] = null;
+  async removeByUserId(userId: string): Promise<void> {
+    await this.db.query(
+      `UPDATE carts SET status = 'ORDERED', updated_at = CURRENT_DATE
+       WHERE user_id = $1 AND status = 'OPEN'`,
+      [userId]
+    );
+  }
+
+  async checkout(userId: string, total: number, delivery: any, comments: string): Promise<void> {
+    const client = await this.db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const cartResult = await client.query(
+        `SELECT id FROM carts WHERE user_id = $1 AND status = 'OPEN' LIMIT 1`,
+        [userId]
+      );
+      const cartId = cartResult.rows[0]?.id;
+      if (!cartId) throw new Error('Cart not found');
+      await client.query(
+        `INSERT INTO orders (user_id, cart_id, delivery, comments, status, total)
+         VALUES ($1, $2, $3, $4, 'ORDERED', $5)`,
+        [userId, cartId, JSON.stringify(delivery), comments || '', total]
+      );
+      await client.query(
+        `UPDATE carts SET status = 'ORDERED', updated_at = CURRENT_DATE WHERE id = $1`,
+        [cartId]
+      );
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async findUserById(userId: string) {
+    const result = await this.db.query(
+      `SELECT * FROM users WHERE id = $1`,
+      [userId]
+    );
+    return result.rows[0] || null;
+  }
+
+  async createUser(name: string, email: string, password: string) {
+    const result = await this.db.query(
+      `INSERT INTO users (name, email, password) VALUES ($1, $2, $3) RETURNING *`,
+      [name, email, password]
+    );
+    return result.rows[0];
+  }
+
+  async getOrdersByUserId(userId: string) {
+    const result = await this.db.query(
+      `SELECT o.*, json_agg(
+        json_build_object('productId', ci.product_id, 'count', ci.count)
+      ) FILTER (WHERE ci.cart_id IS NOT NULL) as items
+      FROM orders o
+      LEFT JOIN cart_items ci ON o.cart_id = ci.cart_id
+      WHERE o.user_id = $1
+      GROUP BY o.id`,
+      [userId]
+    );
+    return result.rows.map((row: any) => ({
+      id: row.id,
+      items: row.items || [],
+      address: row.delivery || {},
+      statusHistory: [
+        {
+          status: row.status,
+          timestamp: Date.now(),
+          comment: row.comments || '',
+        },
+      ],
+    }));
+  }
+
+  async updateOrderStatus(id: string, status: string) {
+    const result = await this.db.query(
+      `UPDATE orders SET status = $1 WHERE id = $2 RETURNING *`,
+      [status, id]
+    );
+    return result.rows[0];
+  }
+
+  async deleteOrder(id: string) {
+    await this.db.query(`DELETE FROM orders WHERE id = $1`, [id]);
+    return { deleted: true };
   }
 }
